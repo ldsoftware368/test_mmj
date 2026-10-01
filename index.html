@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prova diario a scorrimento</title>
+<style>
+  :root { --bg:#15131b; --pan:#201d29; --txt:#ece8f4; --mut:#9a93ab; --acc:#e0a458; --ok:#6fcf97; --ko:#eb7a7a; }
+  * { box-sizing:border-box; }
+  html, body { background:var(--bg); color:var(--txt); }
+  body { margin:0; font:15px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif; padding:0 16px 260px; }
+  header { position:sticky; top:0; z-index:5; background:var(--bg); padding:12px 0 8px; border-bottom:1px solid #ffffff14; }
+  h1 { font-size:18px; margin:0 0 8px; }
+  #start { font:inherit; font-weight:600; background:var(--acc); color:#1b1408; border:0; border-radius:8px; padding:10px 16px; }
+  #start:disabled { opacity:.5; }
+  #log { margin-top:8px; font:12px/1.4 ui-monospace,Consolas,monospace; color:var(--mut); height:5.6em; overflow:auto; background:#0d0c12; border-radius:6px; padding:4px 8px; }
+  #log .ok { color:var(--ok); } #log .ko { color:var(--ko); }
+  .card { min-height:72vh; display:flex; flex-direction:column; justify-content:center; gap:6px; border-bottom:1px dashed #ffffff1f; padding:24px 0; }
+  .card .data { color:var(--mut); font-size:13px; }
+  .card .tit { font-size:24px; font-weight:600; }
+  .card .art { color:var(--mut); }
+  .card .src { font-size:13px; }
+  .card.on .tit { color:var(--acc); }
+  .card .stato { font-size:13px; min-height:1.4em; }
+  .dock { position:fixed; left:0; right:0; bottom:0; z-index:6; background:#0d0c12f2; border-top:1px solid #ffffff1f;
+          padding:10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  #ytbox { width:356px; max-width:100%; height:200px; background:#000; }
+  #ytbox[hidden] { display:none; }
+  #ora { font-size:13px; color:var(--mut); flex:1; min-width:180px; }
+  #ora a { color:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Diario di prova: scorri e ascolta</h1>
+  <button id="start">▶ Ascolta il diario</button>
+  <div id="log"></div>
+</header>
+
+<main id="diario"></main>
+
+<div class="dock">
+  <div id="ytbox" hidden><div id="yt"></div></div>
+  <div id="ora">Premi «Ascolta il diario», poi scorri.</div>
+</div>
+<audio id="aud" playsinline preload="none"></audio>
+
+<script>
+// Voci di prova. yt = video abbinato con lo spezzone del proprietario (secondi del video);
+// senza yt si usa l'anteprima di 30 s dell'iTunes Search API.
+const VOCI = [
+  { data:"12 marzo 2024", t:"Karma Police", a:"Radiohead", yt:{ id:"1uYWYWPc9HU", da:160, a:190 } },
+  { data:"3 aprile 2024", t:"So What", a:"Miles Davis" },
+  { data:"20 maggio 2024", t:"Take On Me", a:"a-ha", yt:{ id:"djV11Xbc914", da:58, a:88 } },
+  { data:"1 giugno 2024", t:"Il pescatore", a:"Fabrizio De André" },
+  { data:"9 luglio 2024", t:"Bohemian Rhapsody", a:"Queen", yt:{ id:"fJ9rUzIMcZQ", da:182, a:212 } },
+  { data:"Caso di prova", t:"Brano senza audio", a:"(nessuna corrispondenza attesa)", termine:"zzqxv nessunbranoesistente 9137" },
+  { data:"30 agosto 2024", t:"One More Time", a:"Daft Punk", yt:{ id:"FGBhQbmPwH8", da:60, a:90 } },
+  { data:"14 settembre 2024", t:"Smells Like Teen Spirit", a:"Nirvana", yt:{ id:"hTWKbfoikeg", da:25, a:55 } },
+];
+
+const $ = s => document.querySelector(s);
+const fmt = s => Math.floor(s/60) + ":" + String(s%60).padStart(2,"0");
+function log(msg, cls){
+  const d = document.createElement("div");
+  d.textContent = new Date().toLocaleTimeString("it-IT") + "  " + msg;
+  if (cls) d.className = cls;
+  $("#log").prepend(d);
+}
+
+// Schede
+const box = $("#diario");
+VOCI.forEach((v, i) => {
+  const c = document.createElement("section");
+  c.className = "card"; c.dataset.i = i;
+  c.innerHTML = `<div class="data">${v.data}</div><div class="tit">${v.t}</div><div class="art">${v.a}</div>
+    <div class="src">${v.yt ? `YouTube · spezzone ${fmt(v.yt.da)} → ${fmt(v.yt.a)}` : "Anteprima Apple 30 s (ripiego)"}</div>
+    <div class="stato"></div>`;
+  box.appendChild(c);
+});
+const stato = (i, txt) => box.children[i].querySelector(".stato").textContent = txt;
+
+// YouTube: un solo player agganciato in basso, visibile quando suona
+let yt = null, ytPronto = false;
+window.onYouTubeIframeAPIReady = () => {
+  yt = new YT.Player("yt", {
+    width: "100%", height: "200",
+    playerVars: { playsinline:1, rel:0, controls:1 },
+    events: {
+      onReady: () => { ytPronto = true; log("Player YouTube pronto"); },
+      onStateChange: e => {
+        const nomi = { "-1":"non avviato", 0:"finito", 1:"in riproduzione", 2:"in pausa", 3:"caricamento", 5:"in coda" };
+        log("YouTube: " + (nomi[e.data] ?? e.data), e.data === 1 ? "ok" : "");
+        if (corrente >= 0 && VOCI[corrente].yt) stato(corrente, "YouTube: " + (nomi[e.data] ?? e.data));
+      },
+      onError: e => { log("YouTube errore " + e.data + " (101/150 = incorporamento vietato)", "ko"); if (corrente >= 0) ripiego(corrente, "errore YouTube " + e.data); }
+    }
+  });
+};
+
+// Audio delle anteprime: un solo elemento, sbloccato dal primo tocco
+const aud = $("#aud");
+aud.addEventListener("playing", () => log("Anteprima in riproduzione", "ok"));
+aud.addEventListener("ended", () => log("Anteprima finita"));
+
+function itunes(termine){
+  return new Promise(ok => {
+    const cb = "it" + Date.now() + Math.floor(Math.random()*1000);
+    const s = document.createElement("script");
+    const fine = r => { delete window[cb]; s.remove(); ok(r); };
+    window[cb] = d => fine(d.results && d.results[0]);
+    s.onerror = () => fine(null);
+    s.src = "https://itunes.apple.com/search?entity=song&limit=1&country=IT&term=" + encodeURIComponent(termine) + "&callback=" + cb;
+    document.head.appendChild(s);
+    setTimeout(() => fine(null), 6000);
+  });
+}
+
+let avviato = false, corrente = -1, timerAttiva = null, timerControllo = null, gen = 0;
+
+function fermaTutto(){
+  clearTimeout(timerControllo);
+  if (yt && ytPronto) { try { yt.pauseVideo(); } catch {} }
+  aud.pause();
+}
+
+async function anteprima(i, g){
+  const v = VOCI[i];
+  $("#ytbox").hidden = true;
+  stato(i, "Cerco l'anteprima…");
+  const r = await itunes(v.termine || (v.a + " " + v.t));
+  if (g !== gen) return;
+  if (!r || !r.previewUrl) { stato(i, "Ascolto non disponibile"); log("Nessuna anteprima per «" + v.t + "»", "ko"); $("#ora").textContent = v.t + ": ascolto non disponibile"; return; }
+  aud.src = r.previewUrl;
+  $("#ora").innerHTML = `${v.t} — anteprima 30 s · <a href="${r.trackViewUrl}" target="_blank" rel="noopener">Ascolta su Apple Music</a>`;
+  try { await aud.play(); stato(i, "Anteprima in riproduzione"); }
+  catch (e) { stato(i, "Anteprima bloccata: " + e.name); log("Anteprima bloccata: " + e.name + " (serve un tocco?)", "ko"); }
+}
+
+function ripiego(i, motivo){
+  if (i !== corrente) return;
+  clearTimeout(timerControllo);
+  log("Ripiego sull'anteprima: " + motivo, "ko");
+  anteprima(i, gen);
+}
+
+function suona(i){
+  const v = VOCI[i], g = ++gen;
+  fermaTutto();
+  log("Attiva: " + v.t);
+  if (v.yt && yt && ytPronto) {
+    $("#ytbox").hidden = false;
+    $("#ora").textContent = `${v.t} — spezzone ${fmt(v.yt.da)} → ${fmt(v.yt.a)}`;
+    yt.loadVideoById({ videoId: v.yt.id, startSeconds: v.yt.da, endSeconds: v.yt.a });
+    // Se dopo 4 s non suona, l'avvio automatico è stato bloccato: si passa all'anteprima
+    timerControllo = setTimeout(() => {
+      if (g !== gen) return;
+      const st = yt.getPlayerState();
+      if (st !== 1 && st !== 3) { try { yt.pauseVideo(); } catch {} ripiego(i, "YouTube non è partito da solo (stato " + st + ")"); }
+    }, 4000);
+  } else {
+    anteprima(i, g);
+  }
+}
+
+// Scheda attiva = quella che attraversa il centro dello schermo per almeno mezzo secondo
+function controllaScorrimento(){
+  const centro = innerHeight / 2;
+  let trovata = -1;
+  [...box.children].forEach((c, i) => { const r = c.getBoundingClientRect(); if (r.top <= centro && r.bottom >= centro) trovata = i; });
+  if (trovata === corrente || trovata < 0) return;
+  corrente = trovata;
+  [...box.children].forEach((c, i) => c.classList.toggle("on", i === trovata));
+  clearTimeout(timerAttiva);
+  if (avviato) timerAttiva = setTimeout(() => suona(trovata), 500);
+}
+let raf = 0;
+addEventListener("scroll", () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(controllaScorrimento); }, { passive:true });
+
+$("#start").addEventListener("click", async () => {
+  // Sblocco dell'audio dentro il gesto: un brevissimo silenzio sullo stesso elemento
+  aud.src = "data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  try { await aud.play(); aud.pause(); log("Audio sbloccato", "ok"); } catch (e) { log("Sblocco audio fallito: " + e.name, "ko"); }
+  avviato = true;
+  $("#start").disabled = true; $("#start").textContent = "In ascolto: scorri";
+  corrente = -1; controllaScorrimento();
+  if (corrente >= 0) { clearTimeout(timerAttiva); suona(corrente); }
+});
+
+log("Browser: " + navigator.userAgent.replace(/\s*\([^)]*\)/g, " ").slice(0, 80));
+controllaScorrimento();
+</script>
+<script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
