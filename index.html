@@ -152,11 +152,12 @@ function suona(i){
     $("#ytbox").hidden = false;
     $("#ora").textContent = `${v.t} — spezzone ${fmt(v.yt.da)} → ${fmt(v.yt.a)}`;
     yt.loadVideoById({ videoId: v.yt.id, startSeconds: v.yt.da, endSeconds: v.yt.a });
-    // Se dopo 4 s non suona, l'avvio automatico è stato bloccato: si passa all'anteprima
+    // Durante una pubblicità il player resta «non avviato» (-1): qui si annota soltanto, senza ripiego.
+    // Il ripiego scatta solo su un errore vero (onError).
     timerControllo = setTimeout(() => {
       if (g !== gen) return;
       const st = yt.getPlayerState();
-      if (st !== 1 && st !== 3) { try { yt.pauseVideo(); } catch {} ripiego(i, "YouTube non è partito da solo (stato " + st + ")"); }
+      if (st !== 1 && st !== 3) { log("YouTube fermo dopo 4 s (stato " + st + "): pubblicità o avvio bloccato? Guarda il player", "ko"); stato(i, "YouTube fermo: pubblicità o avvio bloccato?"); }
     }, 4000);
   } else {
     anteprima(i, g);
